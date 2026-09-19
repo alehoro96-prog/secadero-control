@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secadero de Salames (remoto)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background:#1e1e1e; color:#eee; padding:10px; }
+  h2 { color:#e8a33d; }
+  .card { background:#2a2a2a; border-radius:10px; padding:14px; margin-bottom:14px; }
+  label { display:block; margin-top:8px; }
+  input, select { padding:6px; margin-top:4px; width:100%; box-sizing:border-box; }
+  button { background:#e8a33d; border:none; padding:10px; border-radius:6px; margin-top:8px; width:100%; font-weight:bold; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  td, th { border:1px solid #444; padding:4px; text-align:center; font-size:13px; }
+  .fila-btn { background:#555; width:auto; padding:4px 8px; }
+  .btn-peligro { background:#c0392b; }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tab { background:#333; border:1px solid #444; color:#ccc; padding:8px 14px; border-radius:6px; cursor:pointer; font-size:0.9em; }
+  .tab.activa { background:#e8a33d; color:#1e1e1e; border-color:#e8a33d; }
+  .badge { font-size:0.8em; padding:2px 8px; border-radius:10px; }
+  .badgeENFRIANDO { background:#2266cc; }
+  .badgeDESHUMIDIFICANDO { background:#cc8822; }
+  .badgeREPOSO { background:#555; }
+  #cardGrafico.grande {
+    position:fixed; top:0; left:0; width:100vw;
+    height:100vh; height:100dvh;
+    z-index:9999; margin:0; border-radius:0;
+    display:flex; flex-direction:column; overflow:auto;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+  }
+  #cardGrafico.grande #chartWrap { flex:1; height:auto; min-height:0; }
+  #chartWrap { height:280px; }
+  .nota-remota { font-size:0.75em; color:#888; text-align:center; margin-top:-6px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+
+<h2>Secadero de Salames <span style="font-size:0.6em; color:#888;">(remoto)</span></h2>
+
+<div id="indicadorConexion" style="text-align:center; font-weight:bold; padding:8px; border-radius:8px; background:#333; margin-bottom:4px;">Conectando...</div>
+<div class="nota-remota">Vía MQTT (HiveMQ Cloud) — funciona desde cualquier red con internet</div>
+
+<div class="card">
+  <b>Estado actual</b>
+  <div id="estado">Esperando datos...</div>
+</div>
+
+<div class="card" id="cardGrafico">
+  <b>Gráfico</b>
+  <button style="width:auto; padding:6px 12px; float:right; margin-top:-28px;" onclick="pantallaCompleta()">⛶ Pantalla completa</button>
+  <div class="tabs">
+    <div class="tab activa" id="tabDetalle" onclick="cambiarVista('detalle')">Detalle (2 días)</div>
+    <div class="tab" id="tabCompleto" onclick="cambiarVista('completo')">Ciclo completo</div>
+  </div>
+  <div id="chartWrap" style="position:relative;">
+    <canvas id="chart" height="140"></canvas>
+  </div>
+  <div class="nota-remota">Muestra las últimas ~150 lecturas del log (el historial completo queda en la red local)</div>
+</div>
+
+<div class="card">
+  <b>Día actual</b>
+  <label>Forzar día (dejar en blanco para usar el reloj real):</label>
+  <input type="number" id="diaInput">
+  <button onclick="fijarDia()">Fijar día</button>
+</div>
+
+<div class="card">
+  <b>Compresor</b>
+  <select id="modoComp" onchange="cambiarModoComp()">
+    <option value="auto">Automático</option>
+    <option value="on">Forzar ENCENDIDO</option>
+    <option value="off">Forzar APAGADO</option>
+  </select>
+</div>
+
+<div class="card">
+  <b>Ventilador (circulación / evaporador)</b>
+  <select id="modoFan" onchange="cambiarModoFan()">
+    <option value="auto">Automático</option>
+    <option value="on">Forzar ENCENDIDO</option>
+    <option value="off">Forzar APAGADO</option>
+  </select>
+</div>
+
+<div class="card">
+  <b>Corregir objetivo manualmente</b>
+  <select id="modoObj" onchange="cambiarModoObj()">
+    <option value="auto">Usar receta automática</option>
+    <option value="manual">Corregir a mano</option>
+  </select>
+  <label>Temperatura objetivo (°C):</label>
+  <input type="number" step="0.1" id="tempManual">
+  <label>Humedad objetivo (%):</label>
+  <input type="number" step="0.1" id="humManual">
+  <button onclick="aplicarObjetivoManual()">Aplicar</button>
+</div>
+
+<div class="card">
+  <b>Recetas guardadas</b>
+  <select id="listaRecetas"></select>
+  <button onclick="activarRecetaSeleccionada()">Usar esta receta ahora</button>
+  <div class="nota-remota">La edición de recetas (agregar/quitar etapas) se hace en la red local, como siempre</div>
+</div>
+
+<div class="card">
+  <b>Configuración avanzada</b>
+  <label>Histéresis temperatura (°C):</label>
+  <input type="number" step="0.1" id="cfgHistTemp">
+  <label>Histéresis humedad (%):</label>
+  <input type="number" step="0.1" id="cfgHistHum">
+  <label>Tiempo mínimo apagado compresor (minutos):</label>
+  <input type="number" step="0.5" id="cfgTMinApag">
+  <label>Dip máximo al deshumidificar (°C bajo el objetivo):</label>
+  <input type="number" step="0.5" id="cfgDipMax">
+  <label>Duración de circulación del ventilador (minutos):</label>
+  <input type="number" step="0.5" id="cfgDurCirc">
+  <label>Intervalo de circulación por inactividad (minutos):</label>
+  <input type="number" step="1" id="cfgIntCirc">
+  <label>Seguridad de placa (°C, corte de emergencia anti-escarcha):</label>
+  <input type="number" step="0.5" id="cfgPlacaSeg">
+  <label>Margen de recupero de placa (°C sobre la seguridad, para reintentar):</label>
+  <input type="number" step="0.5" id="cfgPlacaMarg">
+  <button onclick="guardarConfigWeb()">Guardar configuración</button>
+</div>
+
+<div class="card">
+  <b>Red WiFi del equipo</b>
+  <button class="btn-peligro" onclick="olvidarWifi()">Olvidar WiFi (configurar red nueva)</button>
+  <div class="nota-remota">Ojo: si hacés esto, el equipo va a quedar sin wifi hasta que lo configures físicamente cerca</div>
+</div>
+
+<script>
+// ==== CONFIGURACIÓN — completar con tus datos de HiveMQ ====
+const MQTT_HOST = "285a83e43cda4a87bfb563f1ebf4f50a.s1.eu.hivemq.cloud";
+const MQTT_PORT = 8884; // WebSocket
+const MQTT_USER = "secadero_esp32";
+const MQTT_PASS = "Salame26";
+const TOPIC_STATUS  = "secadero/status";
+const TOPIC_HISTORY = "secadero/history";
+const TOPIC_RECIPES = "secadero/recipes";
+const TOPIC_CMD     = "secadero/cmd";
+// =============================================================
+
+let chart;
+let datosCompletos = [];
+let vistaActual = 'detalle';
+let ultimoEstado = null;
+
+const url = `wss://${MQTT_HOST}:${MQTT_PORT}/mqtt`;
+const client = mqtt.connect(url, {
+  username: MQTT_USER,
+  password: MQTT_PASS,
+  clientId: 'secadero-web-' + Math.random().toString(16).slice(2, 8),
+  reconnectPeriod: 4000,
+});
+
+client.on('connect', () => {
+  marcarConexion(true);
+  client.subscribe(TOPIC_STATUS);
+  client.subscribe(TOPIC_HISTORY);
+  client.subscribe(TOPIC_RECIPES);
+});
+client.on('reconnect', () => marcarConexion(false, 'Reconectando...'));
+client.on('offline', () => marcarConexion(false, 'Sin conexión'));
+client.on('error', (e) => { marcarConexion(false, 'Error de conexión'); console.error(e); });
+
+client.on('message', (topic, payload) => {
+  const texto = payload.toString();
+  if (topic === TOPIC_STATUS) {
+    try { procesarEstado(JSON.parse(texto)); } catch (e) { console.error(e); }
+  } else if (topic === TOPIC_HISTORY) {
+    procesarHistorial(texto);
+  } else if (topic === TOPIC_RECIPES) {
+    procesarRecetas(texto);
+  }
+});
+
+function marcarConexion(ok, textoOverride) {
+  var indicador = document.getElementById('indicadorConexion');
+  if (ok) { indicador.innerHTML = '🟢 Conectado'; indicador.style.color = '#4caf50'; }
+  else { indicador.innerHTML = '🔴 ' + (textoOverride || 'Sin conexión — reintentando...'); indicador.style.color = '#e74c3c'; }
+}
+
+function procesarEstado(d) {
+  ultimoEstado = d;
+  document.getElementById('estado').innerHTML =
+    'Receta activa: ' + d.receta + '<br>' +
+    'Día: ' + d.dia + '<br>' +
+    'Temp cámara: ' + d.temp.toFixed(1) + ' °C (objetivo ' + d.objTemp.toFixed(1) + ')<br>' +
+    'Temp placa: ' + (d.tempPlaca !== null ? d.tempPlaca.toFixed(1) + ' °C' : 's/d') + '<br>' +
+    'Humedad: ' + d.hum.toFixed(1) + ' % (objetivo ' + d.objHum.toFixed(1) + ')<br>' +
+    'Compresor: <span class="badge badge' + d.modoComp + '">' + d.modoComp + '</span><br>' +
+    'Ventilador: ' + (d.fan ? 'ON' : 'OFF') + '<br>' +
+    'RTC: ' + (d.rtc ? 'conectado' : 'NO conectado') + '<br>' +
+    'Pantalla: ' + (d.pantalla ? 'conectada' : 'NO conectada') + '<br>' +
+    'Sensor placa: ' + (d.placaOk ? 'conectado' : 'NO conectado');
+}
+
+function procesarHistorial(csv) {
+  const lineas = csv.trim().split('\n').slice(1);
+  datosCompletos = lineas.map(l => {
+    const [ts, dia, tCamara, tPlaca, hum, objT, objH, c, modo, fan] = l.split(',');
+    return {
+      ts: parseInt(ts), temp: parseFloat(tCamara), placa: parseFloat(tPlaca),
+      hum: parseFloat(hum), objTemp: parseFloat(objT), objHum: parseFloat(objH),
+      comp: parseInt(c), modo: modo, fan: parseInt(fan)
+    };
+  }).filter(d => !isNaN(d.ts));
+  dibujarChart();
+}
+
+function procesarRecetas(texto) {
+  var select = document.getElementById('listaRecetas');
+  select.innerHTML = '';
+  if (texto.length === 0) return;
+  texto.split(';').forEach(function(par) {
+    var partes = par.split(':');
+    var opt = document.createElement('option');
+    opt.value = partes[0];
+    opt.text = partes[1];
+    select.appendChild(opt);
+  });
+}
+
+function pantallaCompleta() {
+  const el = document.getElementById('cardGrafico');
+  el.classList.toggle('grande');
+  document.body.style.overflow = el.classList.contains('grande') ? 'hidden' : '';
+  setTimeout(() => { if (chart) chart.resize(); }, 50);
+}
+
+function cambiarVista(v) {
+  vistaActual = v;
+  document.getElementById('tabDetalle').classList.toggle('activa', v === 'detalle');
+  document.getElementById('tabCompleto').classList.toggle('activa', v === 'completo');
+  dibujarChart();
+}
+
+function dibujarChart() {
+  let datos = datosCompletos;
+  if (vistaActual === 'detalle') {
+    const dosDiasAtras = (Date.now() / 1000) - (2 * 24 * 3600);
+    datos = datos.filter(d => d.ts >= dosDiasAtras);
+  }
+
+  const labels = datos.map(d => new Date(d.ts * 1000).toLocaleString('es-AR', {timeZone: 'UTC', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}));
+  const temps = datos.map(d => d.temp);
+  const objTemps = datos.map(d => d.objTemp);
+  const hums = datos.map(d => d.hum);
+  const objHums = datos.map(d => d.objHum);
+  const fan = datos.map(d => d.fan * 36);
+  const bandaEnfriando = datos.map(d => d.modo === 'ENFRIANDO' ? 30 : null);
+  const bandaDeshum = datos.map(d => d.modo === 'DESHUMIDIFICANDO' ? 30 : null);
+
+  if (chart) chart.destroy();
+  const ctx = document.getElementById('chart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: 'Compresor: enfriando', data: bandaEnfriando, borderColor: 'rgba(80,180,255,0)', backgroundColor: 'rgba(80,180,255,0.3)', fill: true, stepped: true, pointRadius: 0, spanGaps: false, yAxisID: 'y' },
+        { label: 'Compresor: deshumidificando', data: bandaDeshum, borderColor: 'rgba(230,140,30,0)', backgroundColor: 'rgba(230,140,30,0.3)', fill: true, stepped: true, pointRadius: 0, spanGaps: false, yAxisID: 'y' },
+        { label: 'Ventilador', data: fan, borderColor: 'rgba(190,120,255,0.8)', backgroundColor: 'transparent', fill: false, stepped: true, borderWidth: 1.5, pointRadius: 0, yAxisID: 'y' },
+        { label: 'Temp. real (°C)', data: temps, borderColor: '#ff9800', backgroundColor: 'transparent', tension: 0.2, pointRadius: 0, borderWidth: 2, yAxisID: 'yTemp' },
+        { label: 'Temp. objetivo (°C)', data: objTemps, borderColor: '#ff9800', backgroundColor: 'transparent', borderDash: [5,4], tension: 0.2, pointRadius: 0, borderWidth: 1.5, yAxisID: 'yTemp' },
+        { label: 'Humedad real (%)', data: hums, borderColor: '#4caf50', backgroundColor: 'transparent', tension: 0.2, pointRadius: 0, borderWidth: 2, yAxisID: 'y' },
+        { label: 'Humedad objetivo (%)', data: objHums, borderColor: '#4caf50', backgroundColor: 'transparent', borderDash: [5,4], tension: 0.2, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { type: 'linear', position: 'left', min: 0, max: 100, title: { display: true, text: 'Humedad % / Compresor' } },
+        yTemp: { type: 'linear', position: 'right', min: 0, max: 40, grid: { drawOnChartArea: false }, title: { display: true, text: 'Temperatura °C' } }
+      }
+    }
+  });
+}
+
+function enviarComando(obj) {
+  client.publish(TOPIC_CMD, JSON.stringify(obj));
+}
+
+function fijarDia() {
+  var v = document.getElementById('diaInput').value;
+  enviarComando({ tipo: 'setDay', dia: (v === '' ? -1 : parseInt(v)) });
+}
+
+function cambiarModoComp() {
+  var v = document.getElementById('modoComp').value;
+  if (v === 'auto') enviarComando({ tipo: 'setManualComp', modo: 0 });
+  else enviarComando({ tipo: 'setManualComp', modo: 1, estado: (v === 'on' ? 1 : 0) });
+}
+
+function cambiarModoFan() {
+  var v = document.getElementById('modoFan').value;
+  if (v === 'auto') enviarComando({ tipo: 'setManualFan', modo: 0 });
+  else enviarComando({ tipo: 'setManualFan', modo: 1, estado: (v === 'on' ? 1 : 0) });
+}
+
+function cambiarModoObj() {
+  var v = document.getElementById('modoObj').value;
+  if (v === 'auto') enviarComando({ tipo: 'setManualObjetivo', modo: 0 });
+}
+
+function aplicarObjetivoManual() {
+  var t = parseFloat(document.getElementById('tempManual').value);
+  var h = parseFloat(document.getElementById('humManual').value);
+  document.getElementById('modoObj').value = 'manual';
+  enviarComando({ tipo: 'setManualObjetivo', modo: 1, temp: t, hum: h });
+}
+
+function activarRecetaSeleccionada() {
+  var idx = document.getElementById('listaRecetas').value;
+  enviarComando({ tipo: 'activarReceta', idx: parseInt(idx) });
+  alert('Receta activada');
+}
+
+function guardarConfigWeb() {
+  enviarComando({
+    tipo: 'saveConfig',
+    histTemp: parseFloat(document.getElementById('cfgHistTemp').value),
+    histHum: parseFloat(document.getElementById('cfgHistHum').value),
+    tMinApagMin: parseFloat(document.getElementById('cfgTMinApag').value),
+    durCircMin: parseFloat(document.getElementById('cfgDurCirc').value),
+    intCircMin: parseFloat(document.getElementById('cfgIntCirc').value),
+    dipMax: parseFloat(document.getElementById('cfgDipMax').value),
+    placaSeg: parseFloat(document.getElementById('cfgPlacaSeg').value),
+    placaMarg: parseFloat(document.getElementById('cfgPlacaMarg').value),
+  });
+  alert('Configuración enviada');
+}
+
+function olvidarWifi() {
+  if (!confirm('Esto va a olvidar la red WiFi actual y reiniciar el equipo. ¿Continuar?')) return;
+  enviarComando({ tipo: 'resetWifi' });
+  alert('Comando enviado. El equipo se va a reiniciar y vas a perder la conexión hasta que lo reconfigures cerca físicamente.');
+}
+</script>
+
+</body>
+</html>
